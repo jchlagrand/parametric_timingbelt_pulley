@@ -10,8 +10,8 @@
 //
 const jscad = require('@jscad/modeling') // non esm
 const { polygon, cylinder } = jscad.primitives
-const { translate, rotate, scale } = jscad.transforms
-const { extrudeLinear } = jscad.extrusions
+const { translate, rotate, scale, mirrorY } = jscad.transforms
+const { extrudeLinear, project } = jscad.extrusions
 const { union, subtract } = jscad.booleans
 const belts = [
     /* belt descriptor:
@@ -84,12 +84,14 @@ const pulley = (d) => {
         depthScale = (d.belt[3] + d.depthAddition) / d.belt[3]
     let profiles = [], radStep = (Math.PI * 2 / d.teeth)
     const profile = translate(
-        [0, centerDistance - mysteriousCorrection, -d.height / 2],
+        [0, centerDistance + mysteriousCorrection, -d.height / 2],
         scale(
             [widthScale, depthScale],
             extrudeLinear(
                 { height: d.height },
-                polygon({ points: d.belt[4].reverse() }) // points must linkup ccw
+                mirrorY(
+                    polygon({ points: d.belt[4].slice(1,-1) }) // points must linkup ccw
+                )
             )
         )
     )
@@ -101,33 +103,33 @@ const pulley = (d) => {
             )
         )
     }
-    return union(
-        subtract(
+    return subtract(
             cylinder({
                 radius: pod / 2,
-                height: d.height
+                height: d.height,
+                segments: d.teeth * 2
             }),
             cylinder({
                 radius: d.bore / 2,
-                height: d.height + 1
-            })
-        ),
-        profiles
-    )
+                height: d.height + 1,
+                segments: d.teeth * 2
+            }),
+            profiles
+        )
 }
 const main = (arg) => {
     // npx jscad index.js --type GT_2_2mm --size 18x18 --bore 6 -of stlb -o tp.stl
+    // npx jscad index.js --type GT_2_2mm --size 18 --bore 6 -of dxf -o tp.dxf
     let b = belts.find(e => e[0] === arg.type)
     let s = arg.size.split('x')
-    console.log(b[0], s)
     let r = pulley({
         belt: b,
         teeth: +s[0],
-        height: +s[1],
+        height: (s.length === 1) ? 1 : +s[1],
         depthAddition: -0.1,
-        widthAddition: -0.3,
+        widthAddition: 0,
         bore: +arg.bore
     })
-    return r
+    return (s.length === 1) ? project({},r) : r
 }
 module.exports = { main }

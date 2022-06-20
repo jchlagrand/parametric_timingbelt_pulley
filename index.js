@@ -10,7 +10,7 @@
 //
 const jscad = require('@jscad/modeling') // non esm
 const { polygon, cylinder } = jscad.primitives
-const { translate, rotate, scale, mirrorY } = jscad.transforms
+const { translate, rotate } = jscad.transforms
 const { extrudeLinear, project } = jscad.extrusions
 const { union, subtract } = jscad.booleans
 const belts = [
@@ -66,7 +66,7 @@ const belts = [
         [[-1.975908, -1], [-1.975908, 0], [-1.797959, 0.03212], [-1.646634, 0.121224], [-1.534534, 0.256431], [-1.474258, 0.426861], [-1.446911, 0.570808], [-1.411774, 0.712722], [-1.368964, 0.852287], [-1.318597, 0.989189], [-1.260788, 1.123115], [-1.195654, 1.25375], [-1.12331, 1.380781], [-1.043869, 1.503892], [-0.935264, 1.612278], [-0.817959, 1.706414], [-0.693181, 1.786237], [-0.562151, 1.851687], [-0.426095, 1.9027], [-0.286235, 1.939214], [-0.143795, 1.961168], [0, 1.9685], [0.143796, 1.961168], [0.286235, 1.939214], [0.426095, 1.9027], [0.562151, 1.851687], [0.693181, 1.786237], [0.817959, 1.706414], [0.935263, 1.612278], [1.043869, 1.503892], [1.123207, 1.380781], [1.195509, 1.25375], [1.26065, 1.123115], [1.318507, 0.989189], [1.368956, 0.852287], [1.411872, 0.712722], [1.447132, 0.570808], [1.474611, 0.426861], [1.534583, 0.256431], [1.646678, 0.121223], [1.798064, 0.03212], [1.975908, 0], [1.975908, -1]]
     ]
 ]
-const toothSpacing = (count, parameters) => {
+const diameterPerPocket = (count, parameters) => {
     if (parameters.length === 2) {
         return 2 * ((count * parameters[0]) / (Math.PI * 2) - parameters[1]) / count
     } else {
@@ -74,62 +74,57 @@ const toothSpacing = (count, parameters) => {
         return parameters[1] * pwr / (parameters[0] + pwr)
     }
 }
-const pulleyOutsideDiameter = (belt, toothCount) => toothCount * toothSpacing(toothCount, belt[1])
+const pulleyOutsideDiameter = (belt, pocketCount) => pocketCount * diameterPerPocket(pocketCount, belt[1])
 const pulley = (d) => {
+    // Belt profile data is 'arced' as follows:
+    // The tooth form is kept and negated to a 'pocket' and pushed outward depending on the radius.
+    // The profile is a closed polygon; sliceout what is wanted and expand into a 'pie-slice' shape,
+    // based on two right-angle triangles; \|/
     const
-        pod = pulleyOutsideDiameter(d.belt, d.teeth),
-        mysteriousCorrection = 0.1,
-        centerDistance = Math.sqrt(Math.pow(pod / 2, 2) - Math.pow((d.belt[3] + d.widthAddition) / 2, 2)),
         widthScale = (d.belt[2] + d.widthAddition) / d.belt[2],
-        depthScale = (d.belt[3] + d.depthAddition) / d.belt[3]
-    let profiles = [], radStep = (Math.PI * 2 / d.teeth)
-    const profile = translate(
-        [0, centerDistance + mysteriousCorrection, -d.height / 2],
-        scale(
-            [widthScale, depthScale],
-            extrudeLinear(
-                { height: d.height },
-                mirrorY(
-                    polygon({ points: d.belt[4].slice(1,-1) }) // points must linkup ccw
-                )
-            )
-        )
-    )
-    for (let i = 1; i <= d.teeth; i++) {
-        profiles.push(
+        depthScale = (d.belt[3] + d.depthAddition) / d.belt[3],
+        pod = pulleyOutsideDiameter(d.belt, d.pockets),
+        hypotenuse = Math.sqrt(Math.pow(pod / 2, 2) - Math.pow((d.belt[3] + d.widthAddition) / 2, 2)),
+        angle = Math.PI / d.pockets,
+        adjacent = hypotenuse * Math.cos(angle),
+        opposite = hypotenuse * Math.sin(angle),
+        arcRise = (opposite + d.belt[4][0][0]) * (Math.sqrt(Math.pow(hypotenuse, 2) + Math.pow(hypotenuse * Math.tan(angle), 2)) - hypotenuse) / opposite
+    let segments = [], profilePoints = d.belt[4].slice(1, -1).map(e => [e[0] * widthScale, -e[1] * depthScale + adjacent + arcRise])
+    profilePoints.push([+opposite, +adjacent])
+    profilePoints.push([0, 0]) // centerpoint
+    profilePoints.push([-opposite, +adjacent])
+    const segment = translate([0, 0, -d.height / 2], extrudeLinear(
+        { height: d.height },
+        polygon({ points: profilePoints.reverse() }) // ccw
+    ))
+    for (let i = 0; i < d.pockets; i++) {
+        segments.push(
             rotate(
-                [0, 0, i * radStep],
-                profile
+                [0, 0, 2 * i * angle],
+                segment
             )
         )
     }
-    return subtract(
-            cylinder({
-                radius: pod / 2,
-                height: d.height,
-                segments: d.teeth * 2
-            }),
-            cylinder({
-                radius: d.bore / 2,
-                height: d.height + 1,
-                segments: d.teeth * 2
-            }),
-            profiles
-        )
+    return (d.bore) ? subtract(
+        union(segments),
+        cylinder({
+            radius: d.bore / 2,
+            height: d.height + 1,
+            chords: d.pockets * 2
+        })
+    ) : union(segments)
 }
 const main = (arg) => {
-    // npx jscad index.js --type GT_2_2mm --size 18x18 --bore 6 -of stlb -o tp.stl
-    // npx jscad index.js --type GT_2_2mm --size 18 --bore 6 -of dxf -o tp.dxf
     let b = belts.find(e => e[0] === arg.type)
     let s = arg.size.split('x')
     let r = pulley({
         belt: b,
-        teeth: +s[0],
+        pockets: +s[0],
         height: (s.length === 1) ? 1 : +s[1],
-        depthAddition: -0.1,
-        widthAddition: 0,
+        depthAddition: 0,
+        widthAddition: -0.06, // negative widens
         bore: +arg.bore
     })
-    return (s.length === 1) ? project({},r) : r
+    return (s.length === 1) ? project({}, r) : r
 }
 module.exports = { main }
